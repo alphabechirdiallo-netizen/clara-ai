@@ -1,7 +1,23 @@
 import Groq from 'groq-sdk'
 
-export const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
+// Lazy instantiation — client créé à la demande, jamais au build time
+let _groq: Groq | null = null
+
+export function getGroqClient(): Groq {
+  if (!_groq) {
+    if (!process.env.GROQ_API_KEY) {
+      throw new Error('GROQ_API_KEY is not configured')
+    }
+    _groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
+  }
+  return _groq
+}
+
+// Kept for backward compat — use getGroqClient() in route handlers
+export const groq = new Proxy({} as Groq, {
+  get(_target, prop) {
+    return (getGroqClient() as any)[prop]
+  },
 })
 
 export const CLARA_MODEL = 'llama-3.3-70b-versatile'

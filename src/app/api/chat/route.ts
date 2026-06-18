@@ -1,12 +1,20 @@
 import { NextRequest } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { groq, CLARA_MODEL, buildSystemPrompt } from '@/lib/groq/client'
+import { getGroqClient, CLARA_MODEL, buildSystemPrompt } from '@/lib/groq/client'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
 export async function POST(req: NextRequest) {
   try {
+    // Validate GROQ key early with a clear message
+    if (!process.env.GROQ_API_KEY) {
+      return new Response(
+        JSON.stringify({ error: 'Configuration serveur manquante. Contacte le support.' }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
 
@@ -31,7 +39,7 @@ export async function POST(req: NextRequest) {
       .order('updated_at', { ascending: false })
       .limit(20)
 
-    const memoryStrings = memories?.map(m => `- ${m.key}: ${m.value}`) || []
+    const memoryStrings = memories?.map((m: any) => `- ${m.key}: ${m.value}`) || []
 
     const systemPrompt = buildSystemPrompt(
       mode || 'default',
@@ -42,7 +50,10 @@ export async function POST(req: NextRequest) {
     // Keep last 10 messages for context
     const contextMessages = messages.slice(-10)
 
-    const stream = await groq.chat.completions.create({
+    // Instantiate client inside handler — safe at runtime
+    const groqClient = getGroqClient()
+
+    const stream = await groqClient.chat.completions.create({
       model: CLARA_MODEL,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -54,7 +65,6 @@ export async function POST(req: NextRequest) {
       top_p: 0.95,
     })
 
-    // Create readable stream
     const encoder = new TextEncoder()
     const readable = new ReadableStream({
       async start(controller) {
@@ -84,13 +94,11 @@ export async function POST(req: NextRequest) {
                   tokens_used: (chunk as any).usage?.completion_tokens || 0,
                 })
 
-                // Update conversation timestamp
                 await supabase
                   .from('conversations')
                   .update({ updated_at: new Date().toISOString() })
                   .eq('id', conversationId)
 
-                // Log usage
                 await supabase.from('usage_logs').insert({
                   user_id: user.id,
                   conversation_id: conversationId,
@@ -99,8 +107,7 @@ export async function POST(req: NextRequest) {
                   model: CLARA_MODEL,
                 })
 
-                // Auto-extract memories from conversation
-                await extractAndSaveMemories(supabase, user.id, contextMessages, fullContent)
+                await extractAndSaveMemories(supabase, user.id, contextMessages)
               }
             }
           }
@@ -131,19 +138,13 @@ export async function POST(req: NextRequest) {
   }
 }
 
-async function extractAndSaveMemories(
-  supabase: any,
-  userId: string,
-  messages: any[],
-  lastResponse: string
-) {
+async function extractAndSaveMemories(supabase: any, userId: string, messages: any[]) {
   try {
-    const userMessages = messages.filter(m => m.role === 'user').slice(-3)
+    const userMessages = messages.filter((m: any) => m.role === 'user').slice(-3)
     if (userMessages.length === 0) return
 
     const lastUserMessage = userMessages[userMessages.length - 1]?.content || ''
 
-    // Simple pattern-based memory extraction (no extra API call)
     const patterns = [
       { regex: /je m'appelle ([A-Za-zÀ-ÿ]+)/i, key: 'prénom', category: 'context' },
       { regex: /j'aime (la bourse|l'investissement|l'entrepreneuriat|la tech|la finance)/i, key: 'centres d\'intérêt', category: 'preference' },
